@@ -171,7 +171,8 @@ class ExpandablePageView extends StatefulWidget {
     this.loop = false,
     Key? key,
   })  : assert(estimatedPageSize >= 0.0),
-        assert(!loop || children.isNotEmpty, 'children must not be empty when loop is true'),
+        assert(!loop || children.isNotEmpty,
+            'children must not be empty when loop is true'),
         children = children,
         itemBuilder = null,
         itemCount = null,
@@ -200,7 +201,8 @@ class ExpandablePageView extends StatefulWidget {
     this.loop = false,
     Key? key,
   })  : assert(estimatedPageSize >= 0.0),
-        assert(!loop || itemCount > 0, 'itemCount must be greater than 0 when loop is true'),
+        assert(!loop || itemCount > 0,
+            'itemCount must be greater than 0 when loop is true'),
         children = null,
         itemCount = itemCount,
         itemBuilder = itemBuilder,
@@ -288,7 +290,8 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
     if (_sizes.isEmpty) return 0;
 
     final viewportFraction = _pageController.viewportFraction;
-    final visibleOnEachSide = ((1 - viewportFraction) / (2 * viewportFraction)).ceil();
+    final visibleOnEachSide =
+        ((1 - viewportFraction) / (2 * viewportFraction)).round();
 
     double maxSize = 0;
     for (int i = -visibleOnEachSide; i <= visibleOnEachSide; i++) {
@@ -332,7 +335,8 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
     } else {
       _pageController = _createStandardController(0);
       _shouldDisposePageController = widget.controller == null;
-      _currentPage = _pageController.initialPage.clamp(0, max(0, _sizes.length - 1));
+      _currentPage =
+          _pageController.initialPage.clamp(0, max(0, _sizes.length - 1));
       _previousPage = max(0, _currentPage - 1);
     }
   }
@@ -436,7 +440,8 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
       _currentPage = _sizes.length - 1;
       widget.onPageChanged?.call(_currentPage);
 
-      _previousPage = (_currentPage + differenceFromPreviousToCurrent).clamp(0, _sizes.length - 1);
+      _previousPage = (_currentPage + differenceFromPreviousToCurrent)
+          .clamp(0, _sizes.length - 1);
     }
 
     if (!widget.loop) {

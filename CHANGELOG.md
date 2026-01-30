@@ -1,3 +1,8 @@
+## 1.2.1
+
+* Fixed height calculation with near-1.0 `viewportFraction` values — adjacent pages now only affect height when at least 50% visible, preventing unnecessary vertical space when using small fractions for spacing/padding
+* Scoped library export to only expose `ExpandablePageView`, preventing internal implementation details from leaking into the public API
+
 ## 1.2.0
 
 * Added `loop` parameter to enable infinite looping through pages ([#50](https://github.com/Limbou/expandable_page_view/issues/50))

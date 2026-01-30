@@ -1,1 +1,1 @@
-export 'src/expandable_page_view.dart';
+export 'src/expandable_page_view.dart' show ExpandablePageView;
