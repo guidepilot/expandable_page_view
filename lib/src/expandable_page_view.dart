@@ -192,11 +192,21 @@ class ExpandablePageView extends StatefulWidget {
 class _ExpandablePageViewState extends State<ExpandablePageView> {
   late PageController _pageController;
   late List<double> _sizes;
+  // Latest size each page has reported, whether or not it has been committed
+  // into [_sizes]. Reports made while the page view is mid-transition are
+  // parked here and only committed once the controller settles — see
+  // [_reportSize] / [_commitSizesIfSettled]. Prevents a transient, wrong-width
+  // measurement during a swipe from being taken as a page's size (and, with
+  // [expandToMaxSize], being locked in as the never-shrinking maximum).
+  late List<double?> _lastReportedSizes;
   late double _maxChildSize;
   int _currentPage = 0;
   int _previousPage = 0;
   bool _shouldDisposePageController = false;
   bool _firstPageLoaded = false;
+  // True between a ScrollStartNotification and ScrollEndNotification from the
+  // page view itself — i.e. while a page transition is in progress.
+  bool _isScrolling = false;
 
   double get _currentSize => _sizes[_currentPage];
 
@@ -210,6 +220,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
   void initState() {
     super.initState();
     _sizes = _prepareSizes();
+    _lastReportedSizes = List<double?>.filled(_sizes.length, null, growable: true);
     _maxChildSize = _sizes.reduce(max) ?? 1;
     _pageController = widget.controller ?? PageController();
     _pageController.addListener(_updatePage);
@@ -244,11 +255,15 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
 
   @override
   Widget build(BuildContext context) {
+    final pageView = NotificationListener<ScrollNotification>(
+      onNotification: _onScroll,
+      child: _buildPageView(),
+    );
     if (widget.expandToMaxSize) {
       return SizedBox(
         height: _isHorizontalScroll ? _maxChildSize : null,
         width: !_isHorizontalScroll ? _maxChildSize : null,
-        child: _buildPageView(),
+        child: pageView,
       );
     } else {
       return TweenAnimationBuilder<double>(
@@ -260,7 +275,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
           width: !_isHorizontalScroll ? value : null,
           child: child,
         ),
-        child: _buildPageView(),
+        child: pageView,
       );
     }
   }
@@ -287,6 +302,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
 
     _previousPage = _previousPage.clamp(0, _sizes.length - 1);
     _sizes[_currentPage] = currentPageSize;
+    _lastReportedSizes = List<double?>.filled(_sizes.length, null, growable: true);
     _maxChildSize = _sizes.reduce(max) ?? 1;
 
   }
@@ -351,15 +367,70 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
         _currentPage = newPage;
       });
     }
+    // A scroll that just settled parked its final size reports while it was
+    // moving; flush them now that we are at rest.
+    _commitSizesIfSettled();
+  }
+
+  /// Whether the page view is at rest (not mid-swipe / mid-animation). Sizes
+  /// reported while scrolling are unreliable — an off-screen page can briefly
+  /// be laid out at the wrong width and soft-wrap much taller than it really
+  /// is — so they are only trusted once this is true. Driven by
+  /// [ScrollStartNotification] / [ScrollEndNotification] from the page view.
+  bool get _isSettled => !_isScrolling;
+
+  /// Intercepts the page view's own scroll notifications (depth 0 only, so a
+  /// scrollable *inside* a page doesn't count) to track transition state and
+  /// flush parked sizes once a transition ends.
+  bool _onScroll(ScrollNotification notification) {
+    if (notification.depth != 0) return false;
+    if (notification is ScrollStartNotification) {
+      _isScrolling = true;
+    } else if (notification is ScrollEndNotification) {
+      _isScrolling = false;
+      // Flush after the settled frame has laid the page out at its final
+      // width, so the committed size is the real one, not a mid-scroll value.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _commitSizesIfSettled();
+      });
+    }
+    return false;
+  }
+
+  /// Records a page's latest measured size, committing it immediately if the
+  /// view is settled and otherwise deferring it until the scroll ends.
+  void _reportSize(int index, double size) {
+    if (index < 0 || index >= _lastReportedSizes.length) return;
+    if (_lastReportedSizes[index] == size) return;
+    _lastReportedSizes[index] = size;
+    _commitSizesIfSettled();
+  }
+
+  /// Applies parked size reports to [_sizes] (and recomputes [_maxChildSize])
+  /// once the view is at rest. No-op while scrolling.
+  void _commitSizesIfSettled() {
+    if (!_isSettled) return;
+    var changed = false;
+    for (var i = 0; i < _sizes.length; i++) {
+      final reported = _lastReportedSizes[i];
+      if (reported != null && _sizes[i] != reported) {
+        _sizes[i] = reported;
+        changed = true;
+      }
+    }
+    if (changed) {
+      setState(() {
+        _maxChildSize = _sizes.reduce(max);
+      });
+    }
   }
 
   Widget _itemBuilder(BuildContext context, int index) {
     final item = widget.itemBuilder!(context, index);
     return OverflowPage(
       minSize: widget.expandToMaxSize ? _maxChildSize : 0,
-      onSizeChange: (size) => setState(
-            () => _sizes[index] = _isHorizontalScroll ? size.height : size.width,
-      ),
+      onSizeChange: (size) =>
+          _reportSize(index, _isHorizontalScroll ? size.height : size.width),
       child: item,
       alignment: widget.alignment,
       scrollDirection: widget.scrollDirection,
@@ -374,12 +445,8 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
 
       OverflowPage(
         minSize: widget.expandToMaxSize ? _maxChildSize : 0,
-        onSizeChange: (size) => setState(
-                () {
-              _sizes[index] = _isHorizontalScroll ? size.height : size.width;
-              _maxChildSize = _sizes.reduce(max) ?? 1;
-            }
-        ),
+        onSizeChange: (size) =>
+            _reportSize(index, _isHorizontalScroll ? size.height : size.width),
         child: child,
         alignment: widget.alignment,
         scrollDirection: widget.scrollDirection,

@@ -1,3 +1,7 @@
+## 1.0.18
+
+* Only measure page sizes once a transition settles. Sizes reported mid-swipe — when an off-screen page can briefly be laid out at the wrong width and soft-wrap much taller than it really is — are deferred (tracked via `ScrollStart`/`ScrollEnd` notifications) and committed when the scroll ends. This stops `expandToMaxSize` from capturing a transient, wrong height as its never-shrinking maximum.
+
 ## 1.0.17
 
 * Fix example videos not being displayed in pub.dev
