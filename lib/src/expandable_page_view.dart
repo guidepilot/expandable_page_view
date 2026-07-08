@@ -165,6 +165,16 @@ class ExpandablePageView extends StatefulWidget {
   /// Defaults to false.
   final bool loop;
 
+  /// Whether the page view keeps the height of the tallest page it has
+  /// measured, instead of resizing to each page as it is shown.
+  ///
+  /// Sizes are only sampled once a transition settles, so a page briefly laid
+  /// out at the wrong width mid-swipe (soft-wrapping much taller than it really
+  /// is) cannot inflate the height.
+  ///
+  /// Defaults to false.
+  final bool expandToMaxSize;
+
   ExpandablePageView({
     required List<Widget> children,
     this.controller,
@@ -185,6 +195,7 @@ class ExpandablePageView extends StatefulWidget {
     this.scrollDirection = Axis.horizontal,
     this.padEnds = true,
     this.loop = false,
+    this.expandToMaxSize = false,
     Key? key,
   })  : assert(estimatedPageSize >= 0.0),
         assert(!loop || children.isNotEmpty, 'children must not be empty when loop is true'),
@@ -218,6 +229,7 @@ class ExpandablePageView extends StatefulWidget {
     this.scrollDirection = Axis.horizontal,
     this.padEnds = true,
     this.loop = false,
+    this.expandToMaxSize = false,
     Key? key,
   })  : assert(estimatedPageSize >= 0.0),
         assert(!loop || itemCount > 0, 'itemCount must be greater than 0 when loop is true'),
@@ -242,6 +254,15 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
   bool _shouldDisposePageController = false;
   bool _firstPageLoaded = false;
   double? _initialSize;
+  // Latest size each real page has reported, whether or not it has been
+  // committed into [_sizes]. In expandToMaxSize mode, reports made while a
+  // transition is in progress are parked here and only committed once it ends.
+  late List<double?> _lastReportedSizes;
+  // True between a ScrollStart and ScrollEnd from the page view itself.
+  bool _isScrolling = false;
+
+  /// Tallest measured page — used as the fixed height in expandToMaxSize mode.
+  double get _maxChildSize => _sizes.isEmpty ? 0 : _sizes.reduce(max);
 
   /// The actual number of items (not virtual).
   int get _itemCount => widget.itemCount ?? widget.children!.length;
@@ -337,6 +358,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
   void initState() {
     super.initState();
     _sizes = _prepareSizes();
+    _lastReportedSizes = List<double?>.filled(_sizes.length, null, growable: true);
     _initializePageController();
     _pageController.addListener(_updatePage);
     _initialSize = widget.estimatedPageSize;
@@ -539,6 +561,18 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
 
   @override
   Widget build(BuildContext context) {
+    final pageView = NotificationListener<ScrollNotification>(
+      onNotification: _onScroll,
+      child: _buildPageView(),
+    );
+    if (widget.expandToMaxSize) {
+      final maxSize = _maxChildSize;
+      return SizedBox(
+        height: _isHorizontalScroll ? maxSize : null,
+        width: !_isHorizontalScroll ? maxSize : null,
+        child: pageView,
+      );
+    }
     return TweenAnimationBuilder<double>(
       curve: widget.animationCurve,
       duration: _getDuration(),
@@ -548,7 +582,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
         width: !_isHorizontalScroll ? value : null,
         child: child,
       ),
-      child: _buildPageView(),
+      child: pageView,
     );
   }
 
@@ -568,6 +602,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
       estimatedSizes[i] = _sizes.elementAtOrNull(i) ?? estimatedSizes[i];
     }
     _sizes = estimatedSizes;
+    _lastReportedSizes = List<double?>.filled(_sizes.length, null, growable: true);
 
     if (!widget.loop && realCurrentPage >= _sizes.length) {
       final differenceFromPreviousToCurrent = _previousPage - _currentPage;
@@ -645,6 +680,65 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
         _currentPage = newPage;
       });
     }
+    // A transition that just settled parked its final sizes while it was
+    // moving (expandToMaxSize mode); flush them now that we are at rest.
+    _commitSizesIfSettled();
+  }
+
+  /// Whether the page view is at rest (not mid-transition). Only meaningful for
+  /// expandToMaxSize mode; driven by [ScrollStartNotification] /
+  /// [ScrollEndNotification] from the page view.
+  bool get _isSettled => !_isScrolling;
+
+  /// Intercepts the page view's own scroll notifications (depth 0 only, so a
+  /// scrollable *inside* a page doesn't count) to track transition state and
+  /// flush parked sizes once a transition ends.
+  bool _onScroll(ScrollNotification notification) {
+    if (notification.depth != 0) return false;
+    if (notification is ScrollStartNotification) {
+      _isScrolling = true;
+    } else if (notification is ScrollEndNotification) {
+      _isScrolling = false;
+      // Flush after the settled frame has laid the page out at its final width.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _commitSizesIfSettled();
+      });
+    }
+    return false;
+  }
+
+  /// Records a real page's latest measured size. In expandToMaxSize mode a size
+  /// reported mid-transition is parked until the scroll settles; otherwise it
+  /// is committed immediately (1.3.0's default per-page sizing).
+  void _reportSize(int realIndex, double size, {required bool isCurrentPage}) {
+    if (realIndex < 0 || realIndex >= _lastReportedSizes.length) return;
+    _lastReportedSizes[realIndex] = size;
+    if (widget.expandToMaxSize && !_isSettled) return;
+    final changed = _drainReportedSizes();
+    final firstLoadPending = isCurrentPage && !_firstPageLoaded;
+    if (changed || firstLoadPending) {
+      setState(() {
+        if (firstLoadPending) _firstPageLoaded = true;
+      });
+    }
+  }
+
+  /// Copies parked reports into [_sizes]; returns whether anything changed.
+  bool _drainReportedSizes() {
+    var changed = false;
+    for (var i = 0; i < _sizes.length; i++) {
+      final reported = _lastReportedSizes[i];
+      if (reported != null && _sizes[i] != reported) {
+        _sizes[i] = reported;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  void _commitSizesIfSettled() {
+    if (widget.expandToMaxSize && !_isSettled) return;
+    if (_drainReportedSizes()) setState(() {});
   }
 
   Widget _itemBuilder(BuildContext context, int virtualIndex) {
@@ -654,12 +748,11 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
         : widget.itemBuilder!(context, realIndex);
 
     return _SizeReportingChild(
-      onSizeChange: (size) => setState(() {
-        _sizes[realIndex] = _isHorizontalScroll ? size.height : size.width;
-        if (virtualIndex == _currentPage && !_firstPageLoaded) {
-          _firstPageLoaded = true;
-        }
-      }),
+      onSizeChange: (size) => _reportSize(
+        realIndex,
+        _isHorizontalScroll ? size.height : size.width,
+        isCurrentPage: virtualIndex == _currentPage,
+      ),
       alignment: widget.alignment,
       scrollDirection: widget.scrollDirection,
       child: child,
@@ -670,12 +763,11 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
     return [
       for (int i = 0; i < widget.children!.length; i++)
         _SizeReportingChild(
-          onSizeChange: (size) => setState(() {
-            _sizes[i] = _isHorizontalScroll ? size.height : size.width;
-            if (i == _currentPage && !_firstPageLoaded) {
-              _firstPageLoaded = true;
-            }
-          }),
+          onSizeChange: (size) => _reportSize(
+            i,
+            _isHorizontalScroll ? size.height : size.width,
+            isCurrentPage: i == _currentPage,
+          ),
           alignment: widget.alignment,
           scrollDirection: widget.scrollDirection,
           child: widget.children![i],

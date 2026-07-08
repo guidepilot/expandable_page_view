@@ -1,3 +1,7 @@
+## 1.3.0+gp.1
+
+* (guidepilot fork) Re-added `expandToMaxSize`: keeps the page view at the height of the tallest measured page instead of resizing to each page. Page sizes are sampled only once a transition settles (tracked via `ScrollStart`/`ScrollEnd` notifications, depth 0 so a scrollable inside a page doesn't count), so a page briefly laid out at the wrong width mid-swipe — soft-wrapping far too tall — cannot inflate the height. Unlike the previous fork implementation there is no per-page `minSize` floor, so the maximum reflects real page heights and shrinks again if the tallest page's content shrinks.
+
 ## 1.3.0
 
 * Added `ExpandablePageController` for programmatic page control in loop mode — supports `jumpToPage`, `animateToPage`, and `page` getter with real page indices
