@@ -755,6 +755,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
       ),
       alignment: widget.alignment,
       scrollDirection: widget.scrollDirection,
+      minSize: widget.expandToMaxSize ? _maxChildSize : 0,
       child: child,
     );
   }
@@ -770,6 +771,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
           ),
           alignment: widget.alignment,
           scrollDirection: widget.scrollDirection,
+          minSize: widget.expandToMaxSize ? _maxChildSize : 0,
           child: widget.children![i],
         ),
     ];
@@ -782,17 +784,25 @@ class _SizeReportingChild extends StatelessWidget {
   final Alignment alignment;
   final Axis scrollDirection;
 
+  /// Floor applied to the page's main-axis extent. In expandToMaxSize mode this
+  /// is the tallest measured page, so every (shorter) page fills to the common
+  /// height instead of shrink-wrapping and leaving a gap. 0 disables the floor.
+  /// Safe against the mid-transition ratchet because size reports are parked and
+  /// only committed once the scroll settles (see [_reportSize]).
+  final double minSize;
+
   const _SizeReportingChild({
     required this.onSizeChange,
     required this.child,
     required this.alignment,
     required this.scrollDirection,
+    required this.minSize,
   });
 
   @override
   Widget build(BuildContext context) {
     return OverflowBox(
-      minHeight: scrollDirection == Axis.horizontal ? 0 : null,
+      minHeight: scrollDirection == Axis.horizontal ? minSize : null,
       minWidth: scrollDirection == Axis.vertical ? 0 : null,
       maxHeight: scrollDirection == Axis.horizontal ? double.infinity : null,
       maxWidth: scrollDirection == Axis.vertical ? double.infinity : null,
