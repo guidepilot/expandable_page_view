@@ -1,3 +1,7 @@
+## 1.3.0+gp.2
+
+* (guidepilot fork) `expandToMaxSize` follows a change of width — a rotation, a split-screen resize — back down. Pages fill to the tallest page's height (the fill floor, restored after gp.1), but were also *measured* with that floor applied, so none could report less than it and the height never shrank: a page view grown taller in landscape kept that height in portrait. Pages are now measured laid out without the floor and only then filled to it, and the height counts only pages measured at the current width.
+
 ## 1.3.0+gp.1
 
 * (guidepilot fork) Re-added `expandToMaxSize`: keeps the page view at the height of the tallest measured page instead of resizing to each page. Page sizes are sampled only once a transition settles (tracked via `ScrollStart`/`ScrollEnd` notifications, depth 0 so a scrollable inside a page doesn't count), so a page briefly laid out at the wrong width mid-swipe — soft-wrapping far too tall — cannot inflate the height. Unlike the previous fork implementation there is no per-page `minSize` floor, so the maximum reflects real page heights and shrinks again if the tallest page's content shrinks.
