@@ -266,6 +266,10 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
   // The cross-axis extent of the latest committed measurement — the page
   // view's current width, for a horizontal one.
   double? _currentCrossExtent;
+  // The cross-axis extent of the most recent report, by time. Not taken from
+  // [_lastReportedCrossExtents]: that keeps every page's last report, and a
+  // page last laid out before a rotation still holds the old width there.
+  double? _latestReportedCrossExtent;
   // True between a ScrollStart and ScrollEnd from the page view itself.
   bool _isScrolling = false;
 
@@ -748,6 +752,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
     if (realIndex < 0 || realIndex >= _lastReportedSizes.length) return;
     _lastReportedSizes[realIndex] = _isHorizontalScroll ? size.height : size.width;
     _lastReportedCrossExtents[realIndex] = _isHorizontalScroll ? size.width : size.height;
+    _latestReportedCrossExtent = _lastReportedCrossExtents[realIndex];
     if (widget.expandToMaxSize && !_isSettled) return;
     final changed = _drainReportedSizes();
     final firstLoadPending = isCurrentPage && !_firstPageLoaded;
@@ -768,16 +773,15 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
         changed = true;
       }
       final crossExtent = _lastReportedCrossExtents[i];
-      if (crossExtent != null) {
-        if (_measuredCrossExtents[i] != crossExtent) {
-          _measuredCrossExtents[i] = crossExtent;
-          changed = true;
-        }
-        if (_currentCrossExtent != crossExtent) {
-          _currentCrossExtent = crossExtent;
-          changed = true;
-        }
+      if (crossExtent != null && _measuredCrossExtents[i] != crossExtent) {
+        _measuredCrossExtents[i] = crossExtent;
+        changed = true;
       }
+    }
+    final latest = _latestReportedCrossExtent;
+    if (latest != null && _currentCrossExtent != latest) {
+      _currentCrossExtent = latest;
+      changed = true;
     }
     return changed;
   }

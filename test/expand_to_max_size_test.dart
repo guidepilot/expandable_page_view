@@ -109,6 +109,52 @@ void main() {
     });
 
     testWidgets('''given expandToMaxSize is true
+    and a page further back was last laid out at the wide width
+    then back at the narrow width that old measurement does not count''', (tester) async {
+      // Regression: the current width was taken from the stored reports in
+      // page order, so a page last measured before the rotation — never laid
+      // out again since — set the width back to the old one, and the old
+      // heights counted again.
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(400, 800);
+      addTearDown(tester.view.reset);
+
+      final controller = PageController(viewportFraction: 0.9);
+      addTearDown(controller.dispose);
+      await tester.pumpApp(
+        SingleChildScrollView(
+          child: ExpandablePageView(
+            controller: controller,
+            expandToMaxSize: true,
+            children: const [
+              AspectRatio(aspectRatio: 4 / 3, child: ColoredBox(color: Colors.red)),
+              AspectRatio(aspectRatio: 4 / 3, child: ColoredBox(color: Colors.green)),
+              AspectRatio(aspectRatio: 4 / 3, child: ColoredBox(color: Colors.blue)),
+              AspectRatio(aspectRatio: 4 / 3, child: ColoredBox(color: Colors.yellow)),
+            ],
+          ),
+        ),
+      );
+      final portraitHeight = tester.pageViewHeight;
+
+      tester.view.physicalSize = const Size(800, 400);
+      await tester.pumpAndSettle();
+      final landscapeHeight = tester.pageViewHeight;
+      expect(landscapeHeight, greaterThan(portraitHeight));
+
+      // Visit the last page in landscape, so it is measured at the wide width,
+      // and come back: it is not laid out again from here.
+      controller.jumpToPage(3);
+      await tester.pumpAndSettle();
+      controller.jumpToPage(0);
+      await tester.pumpAndSettle();
+
+      tester.view.physicalSize = const Size(400, 800);
+      await tester.pumpAndSettle();
+      expect(tester.pageViewHeight, portraitHeight);
+    });
+
+    testWidgets('''given expandToMaxSize is true
     and a page shorter than the tallest one
     then it still fills the common height''', (tester) async {
       await tester.pumpApp(
