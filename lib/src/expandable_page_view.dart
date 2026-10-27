@@ -3,9 +3,9 @@ library expandable_page_view;
 import 'dart:math';
 
 import 'package:expandable_page_view/src/expandable_page_controller.dart';
-import 'package:expandable_page_view/src/size_reporting_widget.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 typedef WidgetBuilder = Widget Function(BuildContext context, int index);
 
@@ -258,11 +258,38 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
   // committed into [_sizes]. In expandToMaxSize mode, reports made while a
   // transition is in progress are parked here and only committed once it ends.
   late List<double?> _lastReportedSizes;
+  // The cross-axis extent (the width, for a horizontal page view) each page was
+  // measured at, alongside [_sizes] / [_lastReportedSizes]. Null: not measured
+  // (an estimate, or a placeholder carried over from another page).
+  late List<double?> _measuredCrossExtents;
+  late List<double?> _lastReportedCrossExtents;
+  // The cross-axis extent of the latest committed measurement — the page
+  // view's current width, for a horizontal one.
+  double? _currentCrossExtent;
   // True between a ScrollStart and ScrollEnd from the page view itself.
   bool _isScrolling = false;
 
-  /// Tallest measured page — used as the fixed height in expandToMaxSize mode.
-  double get _maxChildSize => _sizes.isEmpty ? 0 : _sizes.reduce(max);
+  /// Tallest page — used as the fixed height in expandToMaxSize mode.
+  ///
+  /// Only pages measured at the current cross-axis extent count, besides the
+  /// unmeasured estimates: a page's height depends on its width, so one measured
+  /// before a rotation (or a split-screen resize) says nothing about it now. Such
+  /// a page counts again once it has been laid out at the new width — like an
+  /// unvisited page on first appearance.
+  double get _maxChildSize {
+    double maxSize = 0;
+    for (var i = 0; i < _sizes.length; i++) {
+      final measuredAt = _measuredCrossExtents.elementAtOrNull(i);
+      if (measuredAt != null && measuredAt != _currentCrossExtent) continue;
+      maxSize = max(maxSize, _sizes[i]);
+    }
+    return maxSize;
+  }
+
+  void _resetCrossExtents() {
+    _measuredCrossExtents = List<double?>.filled(_sizes.length, null, growable: true);
+    _lastReportedCrossExtents = List<double?>.filled(_sizes.length, null, growable: true);
+  }
 
   /// The actual number of items (not virtual).
   int get _itemCount => widget.itemCount ?? widget.children!.length;
@@ -359,6 +386,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
     super.initState();
     _sizes = _prepareSizes();
     _lastReportedSizes = List<double?>.filled(_sizes.length, null, growable: true);
+    _resetCrossExtents();
     _initializePageController();
     _pageController.addListener(_updatePage);
     _initialSize = widget.estimatedPageSize;
@@ -601,8 +629,14 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
     for (int i = 0; i < estimatedSizes.length; i++) {
       estimatedSizes[i] = _sizes.elementAtOrNull(i) ?? estimatedSizes[i];
     }
+    final measuredCrossExtents = List<double?>.filled(estimatedSizes.length, null, growable: true);
+    for (int i = 0; i < measuredCrossExtents.length; i++) {
+      measuredCrossExtents[i] = _measuredCrossExtents.elementAtOrNull(i);
+    }
     _sizes = estimatedSizes;
     _lastReportedSizes = List<double?>.filled(_sizes.length, null, growable: true);
+    _measuredCrossExtents = measuredCrossExtents;
+    _lastReportedCrossExtents = List<double?>.filled(_sizes.length, null, growable: true);
 
     if (!widget.loop && realCurrentPage >= _sizes.length) {
       final differenceFromPreviousToCurrent = _previousPage - _currentPage;
@@ -710,9 +744,10 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
   /// Records a real page's latest measured size. In expandToMaxSize mode a size
   /// reported mid-transition is parked until the scroll settles; otherwise it
   /// is committed immediately (1.3.0's default per-page sizing).
-  void _reportSize(int realIndex, double size, {required bool isCurrentPage}) {
+  void _reportSize(int realIndex, Size size, {required bool isCurrentPage}) {
     if (realIndex < 0 || realIndex >= _lastReportedSizes.length) return;
-    _lastReportedSizes[realIndex] = size;
+    _lastReportedSizes[realIndex] = _isHorizontalScroll ? size.height : size.width;
+    _lastReportedCrossExtents[realIndex] = _isHorizontalScroll ? size.width : size.height;
     if (widget.expandToMaxSize && !_isSettled) return;
     final changed = _drainReportedSizes();
     final firstLoadPending = isCurrentPage && !_firstPageLoaded;
@@ -732,6 +767,17 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
         _sizes[i] = reported;
         changed = true;
       }
+      final crossExtent = _lastReportedCrossExtents[i];
+      if (crossExtent != null) {
+        if (_measuredCrossExtents[i] != crossExtent) {
+          _measuredCrossExtents[i] = crossExtent;
+          changed = true;
+        }
+        if (_currentCrossExtent != crossExtent) {
+          _currentCrossExtent = crossExtent;
+          changed = true;
+        }
+      }
     }
     return changed;
   }
@@ -750,7 +796,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
     return _SizeReportingChild(
       onSizeChange: (size) => _reportSize(
         realIndex,
-        _isHorizontalScroll ? size.height : size.width,
+        size,
         isCurrentPage: virtualIndex == _currentPage,
       ),
       alignment: widget.alignment,
@@ -766,7 +812,7 @@ class _ExpandablePageViewState extends State<ExpandablePageView> {
         _SizeReportingChild(
           onSizeChange: (size) => _reportSize(
             i,
-            _isHorizontalScroll ? size.height : size.width,
+            size,
             isCurrentPage: i == _currentPage,
           ),
           alignment: widget.alignment,
@@ -785,10 +831,13 @@ class _SizeReportingChild extends StatelessWidget {
   final Axis scrollDirection;
 
   /// Floor applied to the page's main-axis extent. In expandToMaxSize mode this
-  /// is the tallest measured page, so every (shorter) page fills to the common
-  /// height instead of shrink-wrapping and leaving a gap. 0 disables the floor.
-  /// Safe against the mid-transition ratchet because size reports are parked and
-  /// only committed once the scroll settles (see [_reportSize]).
+  /// is the tallest page, so every (shorter) page fills to the common height
+  /// instead of shrink-wrapping and leaving a gap. 0 disables the floor.
+  ///
+  /// The page reports its *natural* size, laid out without the floor
+  /// ([_MeasuredPage]). Measured with it, a page could never report less than
+  /// the floor, so the floor could never come down again: a page view grown
+  /// taller in landscape stayed that tall back in portrait.
   final double minSize;
 
   const _SizeReportingChild({
@@ -801,16 +850,123 @@ class _SizeReportingChild extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return OverflowBox(
-      minHeight: scrollDirection == Axis.horizontal ? minSize : null,
-      minWidth: scrollDirection == Axis.vertical ? 0 : null,
-      maxHeight: scrollDirection == Axis.horizontal ? double.infinity : null,
-      maxWidth: scrollDirection == Axis.vertical ? double.infinity : null,
+    return _MeasuredPage(
+      onNaturalSize: onSizeChange,
       alignment: alignment,
-      child: SizeReportingWidget(
-        onSizeChange: onSizeChange,
-        child: child,
-      ),
+      scrollDirection: scrollDirection,
+      floor: minSize,
+      child: child,
     );
   }
+}
+
+/// Lays a page out free along the main axis (as the `OverflowBox` it replaces
+/// did), reports the size it comes out at, and only then applies [floor] — by
+/// laying it out a second time when it is shorter. Fills the slot the page view
+/// gives it, the page aligned in it by [alignment].
+class _MeasuredPage extends SingleChildRenderObjectWidget {
+  const _MeasuredPage({
+    required this.onNaturalSize,
+    required this.alignment,
+    required this.scrollDirection,
+    required this.floor,
+    required super.child,
+  });
+
+  final ValueChanged<Size> onNaturalSize;
+  final Alignment alignment;
+  final Axis scrollDirection;
+  final double floor;
+
+  @override
+  _RenderMeasuredPage createRenderObject(BuildContext context) => _RenderMeasuredPage(
+        onNaturalSize: onNaturalSize,
+        alignment: alignment,
+        scrollDirection: scrollDirection,
+        floor: floor,
+      );
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderMeasuredPage renderObject) {
+    renderObject
+      ..onNaturalSize = onNaturalSize
+      ..alignment = alignment
+      ..scrollDirection = scrollDirection
+      ..floor = floor;
+  }
+}
+
+class _RenderMeasuredPage extends RenderShiftedBox {
+  _RenderMeasuredPage({
+    required this.onNaturalSize,
+    required Alignment alignment,
+    required Axis scrollDirection,
+    required double floor,
+  })  : _alignment = alignment,
+        _scrollDirection = scrollDirection,
+        _floor = floor,
+        super(null);
+
+  ValueChanged<Size> onNaturalSize;
+
+  Alignment _alignment;
+  set alignment(Alignment value) {
+    if (value == _alignment) return;
+    _alignment = value;
+    markNeedsLayout();
+  }
+
+  Axis _scrollDirection;
+  set scrollDirection(Axis value) {
+    if (value == _scrollDirection) return;
+    _scrollDirection = value;
+    markNeedsLayout();
+  }
+
+  double _floor;
+  set floor(double value) {
+    if (value == _floor) return;
+    _floor = value;
+    markNeedsLayout();
+  }
+
+  Size? _reportedSize;
+
+  /// Free along the main axis, as given across it — the `OverflowBox` this
+  /// replaces: `maxHeight: infinity` for a horizontal page view, `minWidth: 0,
+  /// maxWidth: infinity` for a vertical one.
+  BoxConstraints get _freeConstraints => _scrollDirection == Axis.horizontal
+      ? constraints.copyWith(minHeight: 0, maxHeight: double.infinity)
+      : constraints.copyWith(minWidth: 0, maxWidth: double.infinity);
+
+  @override
+  void performLayout() {
+    final child = this.child;
+    size = constraints.biggest.isFinite ? constraints.biggest : constraints.smallest;
+    if (child == null) return;
+
+    final free = _freeConstraints;
+    child.layout(free, parentUsesSize: true);
+    final naturalSize = child.size;
+    if (naturalSize != _reportedSize) {
+      _reportedSize = naturalSize;
+      // After the frame, as the size reporting this replaces did: the page
+      // view rebuilds on a report, which it may not do mid-layout.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (attached && _reportedSize == naturalSize) onNaturalSize(naturalSize);
+      });
+    }
+
+    // The floor only ever applied to a horizontal page view's height.
+    if (_scrollDirection == Axis.horizontal && _floor > naturalSize.height) {
+      child.layout(free.copyWith(minHeight: _floor), parentUsesSize: true);
+    }
+
+    final childParentData = child.parentData! as BoxParentData;
+    childParentData.offset = _alignment.alongOffset(size - child.size as Offset);
+  }
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) =>
+      constraints.biggest.isFinite ? constraints.biggest : constraints.smallest;
 }

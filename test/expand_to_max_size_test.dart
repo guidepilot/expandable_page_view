@@ -72,5 +72,58 @@ void main() {
       expect(tester.pageViewHeight, 300,
           reason: 'after settling, height is max of real page sizes (200, 300)');
     });
+
+    testWidgets('''given expandToMaxSize is true
+    and the page view gets wider, then narrower again (a rotation)
+    then the height follows the pages back down
+    instead of staying at the tallest height it ever had''', (tester) async {
+      // Regression: pages were measured with the fill floor applied, so none
+      // could report less than the floor, and the floor never came down — a
+      // page view grown taller in landscape kept that height in portrait.
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(400, 800);
+      addTearDown(tester.view.reset);
+
+      // In a scroll view, as on a page: in landscape the screen is shorter than
+      // the page view.
+      await tester.pumpApp(
+        SingleChildScrollView(
+          child: ExpandablePageView(
+            expandToMaxSize: true,
+            children: const [
+              AspectRatio(aspectRatio: 4 / 3, child: ColoredBox(color: Colors.red)),
+              AspectRatio(aspectRatio: 2, child: ColoredBox(color: Colors.blue)),
+            ],
+          ),
+        ),
+      );
+      expect(tester.pageViewHeight, 300);
+
+      tester.view.physicalSize = const Size(800, 400);
+      await tester.pumpAndSettle();
+      expect(tester.pageViewHeight, 600);
+
+      tester.view.physicalSize = const Size(400, 800);
+      await tester.pumpAndSettle();
+      expect(tester.pageViewHeight, 300, reason: 'back at the narrow width: the narrow height');
+    });
+
+    testWidgets('''given expandToMaxSize is true
+    and a page shorter than the tallest one
+    then it still fills the common height''', (tester) async {
+      await tester.pumpApp(
+        ExpandablePageView(
+          expandToMaxSize: true,
+          children: [
+            Container(color: Colors.red, height: 400),
+            const ColoredBox(key: Key('short'), color: Colors.blue, child: SizedBox(height: 100)),
+          ],
+        ),
+      );
+      await tester.drag(find.byType(ExpandablePageView), nextPageScrollOffset);
+      await tester.pumpAndSettle();
+
+      expect(tester.getSize(find.byKey(const Key('short'))).height, 400);
+    });
   });
 }
